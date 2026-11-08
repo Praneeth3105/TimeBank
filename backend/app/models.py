@@ -16,6 +16,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     bio: Mapped[str] = mapped_column(Text, default="")
     location: Mapped[str] = mapped_column(String(160), default="")
+    phone: Mapped[str] = mapped_column(String(30), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     wallet: Mapped["Wallet"] = relationship(back_populates="user", uselist=False, cascade="all, delete-orphan")
     skills: Mapped[list["Skill"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
@@ -63,6 +64,11 @@ class Exchange(Base):
     requester_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     provider_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     credits_settled: Mapped[bool] = mapped_column(Boolean, default=False)
+    scheduled_at: Mapped[str] = mapped_column(String(40), default="")
+    meeting_mode: Mapped[str] = mapped_column(String(20), default="Online")
+    meeting_link: Mapped[str] = mapped_column(String(1000), default="")
+    meeting_location: Mapped[str] = mapped_column(String(255), default="")
+    schedule_notes: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 class Transaction(Base):
@@ -86,3 +92,14 @@ class Review(Base):
     rating: Mapped[int] = mapped_column(Integer)
     comment: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    __table_args__ = (Index("ix_chat_exchange_created", "exchange_id", "created_at"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    exchange_id: Mapped[int] = mapped_column(ForeignKey("exchanges.id", ondelete="CASCADE"), index=True)
+    sender_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    sender: Mapped[User] = relationship()

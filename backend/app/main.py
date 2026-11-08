@@ -2,24 +2,46 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func
+from sqlalchemy import select, func, inspect, text
 from sqlalchemy.exc import IntegrityError
 from .config import settings
 from .database import Base, engine, get_db, SessionLocal
-from .models import User, Wallet, Skill, ServiceRequest, Exchange, Transaction, Review
-from .schemas import RegisterIn, LoginIn, UserOut, ProfileUpdate, SkillIn, RequestIn, ReviewIn
+from .models import User, Wallet, Skill, ServiceRequest, Exchange, Transaction, Review, ChatMessage
+from .schemas import RegisterIn, LoginIn, UserOut, ProfileUpdate, SkillIn, RequestIn, ReviewIn, ChatMessageIn, ExchangeScheduleIn
 from .security import hash_password, verify_password, create_access_token
 from .deps import current_user, admin_user
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    upgrade_existing_database()
     if settings.seed_demo:
         seed_demo()
     yield
 
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_url, "http://127.0.0.1:5173"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+def upgrade_existing_database():
+    """Add chat/contact/scheduling columns to existing TimeBank databases safely."""
+    additions = {
+        "users": {"phone": "VARCHAR(30) NOT NULL DEFAULT ''"},
+        "exchanges": {
+            "scheduled_at": "VARCHAR(40) NOT NULL DEFAULT ''",
+            "meeting_mode": "VARCHAR(20) NOT NULL DEFAULT 'Online'",
+            "meeting_link": "VARCHAR(1000) NOT NULL DEFAULT ''",
+            "meeting_location": "VARCHAR(255) NOT NULL DEFAULT ''",
+            "schedule_notes": "TEXT NOT NULL DEFAULT ''",
+        },
+    }
+    inspector = inspect(engine)
+    with engine.begin() as connection:
+        for table, columns in additions.items():
+            existing = {column["name"] for column in inspector.get_columns(table)}
+            for column, definition in columns.items():
+                if column not in existing:
+                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
+
 
 def seed_demo():
     db = SessionLocal()
@@ -44,7 +66,7 @@ def register(payload: RegisterIn, db: Session = Depends(get_db)):
     email = payload.email.lower()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(409, "An account with this email already exists")
-    user = User(name=payload.name.strip(), email=email, password_hash=hash_password(payload.password), location=payload.location.strip())
+    user = User(name=payload.name.strip(), email=email, password_hash=hash_password(payload.password), location=payload.location.strip(), phone=payload.phone.strip())
     db.add(user); db.flush()
     db.add(Wallet(user_id=user.id, balance=2))
     db.add(Transaction(user_id=user.id, amount=2, entry_type="CREDIT", reference=f"welcome-{user.id}", description="One-time starter allowance"))
@@ -139,7 +161,71 @@ def request_action(request_id: int, action: str, user: User = Depends(current_us
 @app.get("/api/exchanges")
 def exchanges(user: User = Depends(current_user), db: Session = Depends(get_db)):
     rows = db.scalars(select(Exchange).where((Exchange.requester_id == user.id) | (Exchange.provider_id == user.id)).order_by(Exchange.created_at.desc())).all()
-    return [{"id": e.id, "request_id": e.request_id, "requester_id": e.requester_id, "provider_id": e.provider_id, "requester_name": db.get(User,e.requester_id).name, "provider_name": db.get(User,e.provider_id).name, "skill_title": db.get(ServiceRequest,e.request_id).skill.title, "credits": e.credits, "status": e.status, "requester_confirmed": e.requester_confirmed, "provider_confirmed": e.provider_confirmed, "credits_settled": e.credits_settled} for e in rows]
+    result = []
+    for e in rows:
+        requester = db.get(User, e.requester_id)
+        provider = db.get(User, e.provider_id)
+        request = db.get(ServiceRequest, e.request_id)
+        partner = provider if user.id == e.requester_id else requester
+        result.append({
+            "id": e.id, "request_id": e.request_id, "requester_id": e.requester_id, "provider_id": e.provider_id,
+            "requester_name": requester.name, "provider_name": provider.name, "requester_phone": requester.phone,
+            "provider_phone": provider.phone, "requester_location": requester.location, "provider_location": provider.location,
+            "partner_name": partner.name, "partner_phone": partner.phone, "partner_location": partner.location,
+            "skill_title": request.skill.title, "credits": e.credits, "status": e.status,
+            "requester_confirmed": e.requester_confirmed, "provider_confirmed": e.provider_confirmed, "credits_settled": e.credits_settled,
+            "scheduled_at": e.scheduled_at, "meeting_mode": e.meeting_mode, "meeting_link": e.meeting_link,
+            "meeting_location": e.meeting_location, "schedule_notes": e.schedule_notes,
+        })
+    return result
+
+
+def get_exchange_for_member(exchange_id: int, user: User, db: Session) -> Exchange:
+    exchange = db.get(Exchange, exchange_id)
+    if not exchange:
+        raise HTTPException(404, "Exchange not found")
+    if user.id not in (exchange.requester_id, exchange.provider_id):
+        raise HTTPException(403, "You are not a participant in this exchange")
+    return exchange
+
+
+@app.get("/api/exchanges/{exchange_id}/messages")
+def list_exchange_messages(exchange_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    get_exchange_for_member(exchange_id, user, db)
+    rows = db.scalars(select(ChatMessage).where(ChatMessage.exchange_id == exchange_id).order_by(ChatMessage.created_at.asc()).limit(300)).all()
+    return [{"id": m.id, "exchange_id": m.exchange_id, "sender_id": m.sender_id, "sender_name": m.sender.name, "body": m.body, "created_at": m.created_at.isoformat()} for m in rows]
+
+
+@app.post("/api/exchanges/{exchange_id}/messages")
+def send_exchange_message(exchange_id: int, payload: ChatMessageIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    exchange = get_exchange_for_member(exchange_id, user, db)
+    if exchange.status == "CANCELLED":
+        raise HTTPException(409, "Chat is unavailable for a cancelled exchange")
+    body = payload.body.strip()
+    if not body:
+        raise HTTPException(400, "Message cannot be empty")
+    message = ChatMessage(exchange_id=exchange.id, sender_id=user.id, body=body)
+    db.add(message); db.commit(); db.refresh(message)
+    return {"id": message.id, "exchange_id": message.exchange_id, "sender_id": message.sender_id, "sender_name": user.name, "body": message.body, "created_at": message.created_at.isoformat()}
+
+
+@app.patch("/api/exchanges/{exchange_id}/schedule")
+def update_exchange_schedule(exchange_id: int, payload: ExchangeScheduleIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    exchange = get_exchange_for_member(exchange_id, user, db)
+    if exchange.status == "COMPLETED":
+        raise HTTPException(409, "A completed exchange can no longer be rescheduled")
+    link = payload.meeting_link.strip()
+    if link and payload.meeting_mode == "Online" and not link.startswith(("https://", "http://")):
+        raise HTTPException(400, "Meeting link must start with http:// or https://")
+    if payload.meeting_mode == "In-person" and not payload.meeting_location.strip():
+        raise HTTPException(400, "Please provide a public meeting location for an in-person session")
+    exchange.scheduled_at = payload.scheduled_at.strip()
+    exchange.meeting_mode = payload.meeting_mode
+    exchange.meeting_link = link if payload.meeting_mode == "Online" else ""
+    exchange.meeting_location = payload.meeting_location.strip() if payload.meeting_mode == "In-person" else ""
+    exchange.schedule_notes = payload.schedule_notes.strip()
+    db.commit(); db.refresh(exchange)
+    return {"message": "Schedule updated for both participants", "scheduled_at": exchange.scheduled_at, "meeting_mode": exchange.meeting_mode, "meeting_link": exchange.meeting_link, "meeting_location": exchange.meeting_location, "schedule_notes": exchange.schedule_notes}
 
 @app.patch("/api/exchanges/{exchange_id}/confirm")
 def confirm_exchange(exchange_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
