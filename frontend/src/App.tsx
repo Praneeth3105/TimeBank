@@ -37,6 +37,7 @@ type User = {
   role: string;
   bio: string;
   location: string;
+  phone?: string;
 };
 type Skill = {
   id: number;
@@ -367,6 +368,7 @@ function Auth({
     email: "",
     password: "",
     location: "",
+    phone: "",
   });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -432,6 +434,17 @@ function Auth({
                 value={form.location}
                 onChange={(e) => setForm({ ...form, location: e.target.value })}
                 placeholder="e.g. Vijayawada"
+              />
+            </label>
+            <label>
+              Contact number{" "}
+              <small>(shared only after a request is accepted)</small>
+              <input
+                type="tel"
+                value={form.phone}
+                onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                placeholder="Your mobile number"
+                maxLength={30}
               />
             </label>
           </>
@@ -1042,6 +1055,10 @@ function Exchanges() {
     JSON.parse(localStorage.getItem("timebank_user") || "{}").id,
   );
   const [msg, setMsg] = useState("");
+  useEffect(() => {
+    const timer = window.setInterval(reload, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
   const confirm = async (id: number) => {
     try {
       const { data } = await api.patch(`/exchanges/${id}/confirm`);
@@ -1060,42 +1077,290 @@ function Exchanges() {
       <PageTitle
         eyebrow="MAKE IT COUNT"
         title="Your exchanges"
-        sub="Confirm a completed service so time credits can be settled fairly."
+        sub="Chat privately, share contact details, agree on a meeting and confirm the completed service."
       />
-      <div className="panel">
-        {msg && <div className="success-msg">{msg}</div>}
-        {data.map((x) => (
-          <div className="request-row" key={x.id}>
-            <span className="list-icon">
-              <Handshake />
-            </span>
-            <div className="list-grow">
-              <b>{x.skill_title}</b>
-              <small>
-                {x.requester_id === uid
-                  ? `Provider: ${x.provider_name}`
-                  : `Requester: ${x.requester_name}`}{" "}
-                · {money(x.credits)}
-              </small>
-              <span className="status-pill">
-                {x.status.replaceAll("_", " ")}
-              </span>
-            </div>
-            {x.status !== "COMPLETED" && (
-              <button className="btn btn-primary" onClick={() => confirm(x.id)}>
-                <Check size={16} /> Confirm complete
-              </button>
-            )}
-          </div>
-        ))}
-        {!loading && !data.length && (
+      {msg && <div className="success-msg">{msg}</div>}
+      {data.map((x) => (
+        <ExchangeCommunication
+          key={x.id}
+          exchange={x}
+          uid={uid}
+          onConfirm={confirm}
+        />
+      ))}
+      {!loading && !data.length && (
+        <div className="panel">
           <Empty text="Accepted service requests will become exchanges here." />
-        )}
-        {error && <div className="error-msg">{error}</div>}
-      </div>
+        </div>
+      )}
+      {error && <div className="error-msg">{error}</div>}
     </div>
   );
 }
+
+function ExchangeCommunication({
+  exchange: x,
+  uid,
+  onConfirm,
+}: {
+  exchange: any;
+  uid: number;
+  onConfirm: (id: number) => void;
+}) {
+  const [messages, setMessages] = useState<any[]>([]);
+  const [draft, setDraft] = useState("");
+  const [chatError, setChatError] = useState("");
+  const [scheduleMsg, setScheduleMsg] = useState("");
+  const [sending, setSending] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [schedule, setSchedule] = useState({
+    scheduled_at: x.scheduled_at || "",
+    meeting_mode: x.meeting_mode || "Online",
+    meeting_link: x.meeting_link || "",
+    meeting_location: x.meeting_location || "",
+    schedule_notes: x.schedule_notes || "",
+  });
+  const phone = x.partner_phone || "";
+  const location = x.partner_location || "";
+  useEffect(() => {
+    setSchedule({
+      scheduled_at: x.scheduled_at || "",
+      meeting_mode: x.meeting_mode || "Online",
+      meeting_link: x.meeting_link || "",
+      meeting_location: x.meeting_location || "",
+      schedule_notes: x.schedule_notes || "",
+    });
+  }, [
+    x.scheduled_at,
+    x.meeting_mode,
+    x.meeting_link,
+    x.meeting_location,
+    x.schedule_notes,
+  ]);
+  const loadMessages = async () => {
+    try {
+      const { data } = await api.get(`/exchanges/${x.id}/messages`);
+      setMessages(data);
+    } catch (e: any) {
+      setChatError(e.response?.data?.detail || "Unable to load chat");
+    }
+  };
+  useEffect(() => {
+    loadMessages();
+    const timer = window.setInterval(loadMessages, 4000);
+    return () => window.clearInterval(timer);
+  }, [x.id]);
+  const send = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!draft.trim()) return;
+    setSending(true);
+    setChatError("");
+    try {
+      const { data } = await api.post(`/exchanges/${x.id}/messages`, {
+        body: draft.trim(),
+      });
+      setMessages((old) => [...old.filter((m) => m.id !== data.id), data]);
+      setDraft("");
+    } catch (e: any) {
+      setChatError(e.response?.data?.detail || "Message could not be sent");
+    } finally {
+      setSending(false);
+    }
+  };
+  const saveSchedule = async (e: FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setScheduleMsg("");
+    try {
+      await api.patch(`/exchanges/${x.id}/schedule`, schedule);
+      setScheduleMsg(
+        "Schedule saved. Both participants can now see these details.",
+      );
+    } catch (e: any) {
+      setScheduleMsg(e.response?.data?.detail || "Could not update schedule");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <section className="panel exchange-panel">
+      <div className="exchange-heading">
+        <div>
+          <span className="eyebrow">EXCHANGE #{x.id}</span>
+          <h3>{x.skill_title}</h3>
+          <small>
+            {x.requester_id === uid
+              ? `Provider: ${x.partner_name}`
+              : `Requester: ${x.partner_name}`}{" "}
+            · {money(x.credits)}
+          </small>
+          <span className="status-pill">{x.status.replaceAll("_", " ")}</span>
+        </div>
+        {x.status !== "COMPLETED" && (
+          <button className="btn btn-outline" onClick={() => onConfirm(x.id)}>
+            <Check size={15} /> Confirm complete
+          </button>
+        )}
+      </div>
+      <div className="contact-strip">
+        <div>
+          <b>
+            <Users size={14} /> Contact details
+          </b>
+          <span>Phone: {phone || "Not provided — ask them in chat"}</span>
+          <span>General location: {location || "Not provided"}</span>
+        </div>
+        <small>Visible only to participants in this accepted exchange.</small>
+      </div>
+      <div className="exchange-columns">
+        <div className="chat-box">
+          <div className="panel-head">
+            <div>
+              <span className="eyebrow">PRIVATE EXCHANGE CHAT</span>
+              <h3>Messages</h3>
+            </div>
+            <span className="live-dot">● Live refresh</span>
+          </div>
+          <div className="chat-messages">
+            {messages.map((m) => (
+              <div
+                className={`chat-message ${m.sender_id === uid ? "mine" : ""}`}
+                key={m.id}
+              >
+                <b>{m.sender_id === uid ? "You" : m.sender_name}</b>
+                <p>{m.body}</p>
+                <small>{new Date(m.created_at).toLocaleString()}</small>
+              </div>
+            ))}
+            {!messages.length && (
+              <Empty text="No messages yet. Say hello and agree on a time." />
+            )}
+          </div>
+          <form className="chat-compose" onSubmit={send}>
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              maxLength={2000}
+              placeholder="Write a message…"
+            />
+            <button
+              className="btn btn-primary"
+              disabled={sending || !draft.trim()}
+            >
+              {sending ? "Sending…" : "Send"}
+            </button>
+          </form>
+          {chatError && <div className="error-msg">{chatError}</div>}
+        </div>
+        <div className="schedule-box">
+          <div className="panel-head">
+            <div>
+              <span className="eyebrow">MEETING DETAILS</span>
+              <h3>Schedule this exchange</h3>
+            </div>
+            <CalendarDays size={20} />
+          </div>
+          <form className="form-panel" onSubmit={saveSchedule}>
+            <label>
+              Date and time
+              <input
+                type="datetime-local"
+                value={schedule.scheduled_at}
+                onChange={(e) =>
+                  setSchedule({ ...schedule, scheduled_at: e.target.value })
+                }
+              />
+            </label>
+            <label>
+              Meeting type
+              <select
+                value={schedule.meeting_mode}
+                onChange={(e) =>
+                  setSchedule({
+                    ...schedule,
+                    meeting_mode: e.target.value,
+                    meeting_link:
+                      e.target.value === "In-person"
+                        ? ""
+                        : schedule.meeting_link,
+                    meeting_location:
+                      e.target.value === "Online"
+                        ? ""
+                        : schedule.meeting_location,
+                  })
+                }
+              >
+                <option>Online</option>
+                <option>In-person</option>
+              </select>
+            </label>
+            {schedule.meeting_mode === "Online" ? (
+              <label>
+                Meeting link
+                <input
+                  type="url"
+                  value={schedule.meeting_link}
+                  onChange={(e) =>
+                    setSchedule({ ...schedule, meeting_link: e.target.value })
+                  }
+                  placeholder="https://meet.google.com/..."
+                />
+                <small className="field-hint">
+                  Paste a Google Meet, Zoom or other meeting URL. Either
+                  participant can update it.
+                </small>
+              </label>
+            ) : (
+              <label>
+                Public meeting location
+                <input
+                  value={schedule.meeting_location}
+                  onChange={(e) =>
+                    setSchedule({
+                      ...schedule,
+                      meeting_location: e.target.value,
+                    })
+                  }
+                  placeholder="Library, cafe or public place"
+                />
+              </label>
+            )}
+            <label>
+              Notes
+              <textarea
+                value={schedule.schedule_notes}
+                onChange={(e) =>
+                  setSchedule({ ...schedule, schedule_notes: e.target.value })
+                }
+                placeholder="Agenda, what to bring, or other arrangements…"
+              />
+            </label>
+            <button className="btn btn-primary btn-full" disabled={saving}>
+              {saving ? "Saving…" : "Save / update meeting"}
+            </button>
+          </form>
+          {schedule.meeting_link && (
+            <a
+              className="meeting-link"
+              href={schedule.meeting_link}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open current meeting link <ArrowRight size={14} />
+            </a>
+          )}
+          {schedule.meeting_location && (
+            <p className="muted">
+              Current location: {schedule.meeting_location}
+            </p>
+          )}
+          {scheduleMsg && <div className="success-msg">{scheduleMsg}</div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function WalletPage() {
   const w = useLoad<any>("/wallet", { balance: 0 });
   const t = useLoad<any[]>("/wallet/transactions", []);
@@ -1208,6 +1473,7 @@ function Profile({ user }: { user: User }) {
     name: user.name,
     bio: user.bio || "",
     location: user.location || "",
+    phone: user.phone || "",
   });
   const [msg, setMsg] = useState("");
   const save = async (e: FormEvent) => {
@@ -1260,6 +1526,20 @@ function Profile({ user }: { user: User }) {
             onChange={(e) => setForm({ ...form, location: e.target.value })}
             placeholder="City or neighbourhood"
           />
+        </label>
+        <label>
+          Contact number
+          <input
+            type="tel"
+            value={form.phone}
+            onChange={(e) => setForm({ ...form, phone: e.target.value })}
+            placeholder="Mobile number"
+            maxLength={30}
+          />
+          <small>
+            Shared with the other participant only after an exchange is
+            accepted.
+          </small>
         </label>
         {msg && <div className="success-msg">{msg}</div>}
         <button className="btn btn-primary">Save profile</button>
