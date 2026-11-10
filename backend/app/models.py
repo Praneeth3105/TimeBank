@@ -103,3 +103,4 @@ class ChatMessage(Base):
     body: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     sender: Mapped[User] = relationship()
+    
