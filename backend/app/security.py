@@ -22,3 +22,4 @@ def token_user_id(token: str) -> int:
         return int(payload["sub"])
     except (JWTError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("Invalid or expired token") from exc
+    
