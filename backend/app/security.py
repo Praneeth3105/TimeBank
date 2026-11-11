@@ -21,5 +21,4 @@ def token_user_id(token: str) -> int:
         payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
         return int(payload["sub"])
     except (JWTError, KeyError, TypeError, ValueError) as exc:
-        raise ValueError("Invalid or expired token") from exc
-    
+        raise ValueError("Invalid or expired token") from exc 
