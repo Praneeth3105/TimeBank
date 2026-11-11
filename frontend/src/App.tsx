@@ -16,7 +16,6 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
-  MessageCircle,
   Plus,
   Search,
   Settings,
