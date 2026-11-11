@@ -12,7 +12,6 @@ import {
   CircleHelp,
   Clock3,
   Compass,
-  CreditCard,
   Handshake,
   LayoutDashboard,
   LogOut,
