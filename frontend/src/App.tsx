@@ -6,7 +6,6 @@ import {
   BadgeCheck,
   Bell,
   BookOpen,
-  BriefcaseBusiness,
   CalendarDays,
   Check,
   ChevronRight,
